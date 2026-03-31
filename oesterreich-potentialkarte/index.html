@@ -28,6 +28,7 @@
   .lr input{margin:0;cursor:pointer}
   .lc{width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.1);flex-shrink:0}
   .sep{height:1px;background:#ddd;margin:5px 0}
+  .leaflet-tile-container img{background:transparent}
 </style>
 </head>
 <body>
@@ -80,7 +81,9 @@ var topo=L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',{
 function mkLayer(dir,maxNZ){
   return L.tileLayer(dir+'/{z}/{x}/{y}.png',{
     maxNativeZoom:maxNZ,maxZoom:18,minZoom:7,opacity:0.85,
-    errorTileUrl:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAAA0lEQVQI12P4z8BQDwAEgAF/QualzQAAAABJRU5ErkJggg=='
+    keepBuffer:4,
+    updateWhenZooming:false,
+    errorTileUrl:'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
   });
 }
 
