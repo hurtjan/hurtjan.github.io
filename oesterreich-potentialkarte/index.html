@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windkraft-Eignungskarte &Ouml;sterreich</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="data.js"></script>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+  #map{position:absolute;top:0;left:0;right:0;bottom:0}
+  .popup{font-size:13px;line-height:1.7;min-width:230px}
+  .popup .title{font-weight:bold;font-size:14px;margin-bottom:4px}
+  .popup .zone-a{color:#990099} .popup .zone-b{color:#d9268c}
+  .popup .zone-c{color:#ff80cc} .popup .excluded{color:#777}
+  .popup .row{display:flex;justify-content:space-between;gap:12px}
+  .popup .label{color:#555} .popup .value{font-weight:600;white-space:nowrap}
+  .popup hr{margin:4px 0;border:none;border-top:1px solid #eee}
+  .panel{background:white;padding:10px 14px;border-radius:8px;
+    box-shadow:0 2px 8px rgba(0,0,0,.25);font-size:12px;max-height:80vh;overflow-y:auto}
+  .panel h4{margin:0 0 6px;font-size:13px}
+  .lr{display:flex;align-items:center;gap:7px;padding:2px 0;cursor:pointer}
+  .lr input{margin:0;cursor:pointer}
+  .lc{width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.1);flex-shrink:0}
+  .sep{height:1px;background:#ddd;margin:5px 0}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+var NAMES={
+  0:'Außerhalb',1:'Schutzgebiet (NP/NSG/Natura2000/Ramsar)',
+  2:'Siedlungsabstand (Typ A)',3:'Einzelobjekt Grünland (Typ B)',
+  4:'Flughafen-Sperrzone',5:'Verkehrsweg (150m)',6:'Eisenbahn (150m)',
+  7:'Hangneigung > 20°',8:'Seehöhe > 2500m',9:'Bebaute Fläche',
+  10:'Windpotential zu gering',11:'Güteklasse C (< 280 W/m²)',
+  12:'Güteklasse A (≥ 350 W/m²)',13:'Güteklasse B (280–350 W/m²)'
+};
+
+// Datengrid
+var dg=null;
+(function(){
+  var r=atob(DATA_B64),buf=new ArrayBuffer(r.length),u=new Uint8Array(buf);
+  for(var i=0;i<r.length;i++) u[i]=r.charCodeAt(i);
+  var v=new DataView(buf),o=0;
+  var w=v.getFloat64(o,1);o+=8;var s=v.getFloat64(o,1);o+=8;
+  var e=v.getFloat64(o,1);o+=8;var n=v.getFloat64(o,1);o+=8;
+  var rs=v.getFloat64(o,1);o+=8;var ww=v.getUint32(o,1);o+=4;var hh=v.getUint32(o,1);o+=4;
+  dg={west:w,south:s,east:e,north:n,res:rs,width:ww,height:hh,view:v,off:o};
+})();
+
+function query(lat,lon){
+  var g=dg;
+  if(!g||lon<g.west||lon>g.east||lat<g.south||lat>g.north)return null;
+  var c=Math.floor((lon-g.west)/g.res),r=Math.floor((g.north-lat)/g.res);
+  if(c<0||c>=g.width||r<0||r>=g.height)return null;
+  var p=g.off+(r*g.width+c)*9,v=g.view;
+  var cls=v.getUint8(p),pd=v.getUint16(p+1,1),el=v.getInt16(p+3,1),
+      tr=v.getUint16(p+5,1),tp=v.getInt16(p+7,1);
+  return{cls:cls,name:NAMES[cls]||'Code '+cls,suitable:cls>=11,
+    zone:cls===12?'A':cls===13?'B':cls===11?'C':null,
+    pd100:pd===65535?null:pd/10,elev:el===-9999?null:el,
+    tri:tr===65535?null:tr/10,tpi:tp===-32768?null:tp/10};
+}
+
+// Karte
+var map=L.map('map').setView([47.5,13.33],7);
+
+var osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  attribution:'© OpenStreetMap',maxZoom:18}).addTo(map);
+var topo=L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',{
+  attribution:'© OpenTopoMap',maxZoom:17});
+
+// Layer-Gruppen als separate Tile-Layer
+function mkLayer(dir,maxNZ){
+  return L.tileLayer(dir+'/{z}/{x}/{y}.png',{
+    maxNativeZoom:maxNZ,maxZoom:18,minZoom:7,opacity:0.85,
+    errorTileUrl:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAAA0lEQVQI12P4z8BQDwAEgAF/QualzQAAAABJRU5ErkJggg=='
+  });
+}
+
+var layers={
+  zones:  mkLayer('tiles_zones',12),
+  nature: mkLayer('tiles_nature',11),
+  settl:  mkLayer('tiles_settl',11),
+  terrain:mkLayer('tiles_terrain',10),
+  infra:  mkLayer('tiles_infra',11),
+  wind:   mkLayer('tiles_wind',10)
+};
+
+// Alle standardmäßig sichtbar
+for(var k in layers) layers[k].addTo(map);
+
+// Layer-Panel
+var layerDefs=[
+  {key:'zones',  items:[
+    {c:'#990099',l:'Güteklasse A (≥350 W/m²)'},
+    {c:'#d9268c',l:'Güteklasse B (280–350)'},
+    {c:'#ff80cc',l:'Güteklasse C (<280)'}
+  ]},
+  null, // separator
+  {key:'nature', items:[{c:'#218a21',l:'Schutzgebiete'}]},
+  {key:'settl',  items:[{c:'#335ec7',l:'Siedlung'},{c:'#80a6f2',l:'Einzelobjekte'}]},
+  {key:'terrain',items:[{c:'#a1522e',l:'Hangneigung >20°'},{c:'#f28c1a',l:'Höhe >2500m'}]},
+  {key:'wind',   items:[{c:'#bfbfbf',l:'Wind zu gering'}]},
+  {key:'infra',  items:[{c:'#999933',l:'Verkehr/Eisenbahn'},{c:'#cc3333',l:'Flughafen'}]},
+];
+
+var panel=L.control({position:'bottomleft'});
+panel.onAdd=function(){
+  var d=L.DomUtil.create('div','panel');
+  var h='<h4>Layer ein/ausblenden</h4>';
+  layerDefs.forEach(function(def){
+    if(!def){h+='<div class="sep"></div>';return;}
+    h+='<label class="lr"><input type="checkbox" checked data-layer="'+def.key+'">';
+    def.items.forEach(function(it){
+      h+='<div class="lc" style="background:'+it.c+'"></div>';
+    });
+    h+='<span>'+def.items.map(function(it){return it.l}).join(' / ')+'</span></label>';
+  });
+  h+='<div class="sep"></div>';
+  h+='<div style="padding:3px 0"><label>Deckkraft<br><input type="range" min="0" max="100" value="85" id="opsl" style="width:100%"></label></div>';
+  d.innerHTML=h;
+  L.DomEvent.disableClickPropagation(d);
+  d.addEventListener('change',function(e){
+    if(e.target.dataset.layer){
+      var k=e.target.dataset.layer,ly=layers[k];
+      if(e.target.checked) ly.addTo(map); else map.removeLayer(ly);
+    }
+    if(e.target.id==='opsl'){
+      var op=e.target.value/100;
+      for(var k in layers) layers[k].setOpacity(op);
+    }
+  });
+  return d;
+};
+panel.addTo(map);
+
+// Base layer control
+L.control.layers({'OpenStreetMap':osm,'OpenTopoMap':topo}).addTo(map);
+
+// Grenzen
+function loadJ(url,cb){
+  var s=document.createElement('script');
+  // Use XHR for both file:// and http://
+  var x=new XMLHttpRequest();
+  x.onload=function(){if(x.status===200||x.status===0) cb(JSON.parse(x.responseText));};
+  x.open('GET',url,true);
+  x.send();
+}
+loadJ('bl.geojson',function(d){
+  L.geoJSON(d,{style:{color:'#111',weight:2,fill:false,opacity:.7},
+    onEachFeature:function(f,l){l.bindTooltip(f.properties.BL,{sticky:true})}
+  }).addTo(map);
+});
+loadJ('bz.geojson',function(d){
+  L.geoJSON(d,{style:{color:'#555',weight:.4,fill:false,opacity:.4}}).addTo(map);
+});
+
+// Klick
+function mkR(l,v){return'<div class="row"><span class="label">'+l+'</span><span class="value">'+v+'</span></div>';}
+map.on('click',function(e){
+  var d=query(e.latlng.lat,e.latlng.lng);
+  if(!d||d.cls===0)return;
+  var zc=d.zone==='A'?'zone-a':d.zone==='B'?'zone-b':d.zone==='C'?'zone-c':'excluded';
+  var h='<div class="popup"><div class="title '+zc+'">'+d.name+'</div>';
+  if(d.pd100!==null) h+=mkR('Leistungsdichte (100m)',d.pd100+' W/m²');
+  if(d.elev!==null) h+=mkR('Seehöhe',d.elev+' m');
+  if(d.tri!==null) h+=mkR('TRI (Terrain Ruggedness)',d.tri+' m');
+  if(d.tpi!==null) h+=mkR('TPI (Topogr. Position)',d.tpi+' m');
+  h+='<hr><span style="color:#999;font-size:11px">'+
+    e.latlng.lat.toFixed(4)+'°N, '+e.latlng.lng.toFixed(4)+'°E</span></div>';
+  L.popup({maxWidth:300}).setLatLng(e.latlng).setContent(h).openOn(map);
+});
+</script>
+</body>
+</html>
