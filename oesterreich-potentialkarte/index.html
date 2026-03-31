@@ -7,6 +7,9 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="data.js"></script>
+<script src="turbines.js"></script>
+<script src="bl.js"></script>
+<script src="bz.js"></script>
 <style>
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
@@ -106,6 +109,10 @@ var layerDefs=[
   {key:'terrain',items:[{c:'#a1522e',l:'Hangneigung >20°'},{c:'#f28c1a',l:'Höhe >2500m'}]},
   {key:'wind',   items:[{c:'#bfbfbf',l:'Wind zu gering'}]},
   {key:'infra',  items:[{c:'#999933',l:'Verkehr/Eisenbahn'},{c:'#cc3333',l:'Flughafen'}]},
+  null,
+  {key:'turb', items:[
+    {c:'#ffe600',l:'Turbinen A'},{c:'#ff8c00',l:'B'},{c:'#e63030',l:'C'}
+  ], note:'(ab Zoom 10, max 200)'},
 ];
 
 var panel=L.control({position:'bottomleft'});
@@ -118,7 +125,9 @@ panel.onAdd=function(){
     def.items.forEach(function(it){
       h+='<div class="lc" style="background:'+it.c+'"></div>';
     });
-    h+='<span>'+def.items.map(function(it){return it.l}).join(' / ')+'</span></label>';
+    h+='<span>'+def.items.map(function(it){return it.l}).join(' / ');
+    if(def.note) h+=' <span style="color:#999">'+def.note+'</span>';
+    h+='</span></label>';
   });
   h+='<div class="sep"></div>';
   h+='<div style="padding:3px 0"><label>Deckkraft<br><input type="range" min="0" max="100" value="85" id="opsl" style="width:100%"></label></div>';
@@ -126,12 +135,14 @@ panel.onAdd=function(){
   L.DomEvent.disableClickPropagation(d);
   d.addEventListener('change',function(e){
     if(e.target.dataset.layer){
-      var k=e.target.dataset.layer,ly=layers[k];
-      if(e.target.checked) ly.addTo(map); else map.removeLayer(ly);
+      var k=e.target.dataset.layer;
+      if(k==='turb'){ turbEnabled=e.target.checked; refreshTurbines(); return; }
+      var ly=layers[k];
+      if(ly){ if(e.target.checked) ly.addTo(map); else map.removeLayer(ly); }
     }
     if(e.target.id==='opsl'){
       var op=e.target.value/100;
-      for(var k in layers) layers[k].setOpacity(op);
+      for(var k in layers) if(layers[k].setOpacity) layers[k].setOpacity(op);
     }
   });
   return d;
@@ -142,22 +153,87 @@ panel.addTo(map);
 L.control.layers({'OpenStreetMap':osm,'OpenTopoMap':topo}).addTo(map);
 
 // Grenzen
-function loadJ(url,cb){
-  var s=document.createElement('script');
-  // Use XHR for both file:// and http://
-  var x=new XMLHttpRequest();
-  x.onload=function(){if(x.status===200||x.status===0) cb(JSON.parse(x.responseText));};
-  x.open('GET',url,true);
-  x.send();
-}
-loadJ('bl.geojson',function(d){
+(function(){
+  var d=BL_GEOJSON;
   L.geoJSON(d,{style:{color:'#111',weight:2,fill:false,opacity:.7},
     onEachFeature:function(f,l){l.bindTooltip(f.properties.BL,{sticky:true})}
   }).addTo(map);
-});
-loadJ('bz.geojson',function(d){
+})();
+(function(){
+  var d=BZ_GEOJSON;
   L.geoJSON(d,{style:{color:'#555',weight:.4,fill:false,opacity:.4}}).addTo(map);
+})();
+
+// Kapazitätsfaktor-Hilfsfunktionen
+var VLH={A:{min:2676,max:3211},B:{min:2363,max:2836},C:{min:2034,max:2441}};
+function zoneFLH(z){var v=VLH[z]||VLH['C'];return Math.round((v.min+v.max)/2);}
+function cfPct(flh){return (flh/8760*100).toFixed(1);}
+// Ö-Durchschnitt: gewichteter Mittelwert über alle platzierten Turbinen
+var AUT_AVG_FLH=(function(){
+  var vlhMean={A:(2676+3211)/2,B:(2363+2836)/2,C:(2034+2441)/2};
+  var sum=0,n=0;
+  TURBINES_GEOJSON.features.forEach(function(f){
+    sum+=vlhMean[f.properties.zone]||vlhMean['C']; n++;
+  });
+  return n>0?Math.round(sum/n):2250;
+})();
+
+// Turbinen-Layer
+var MIN_TURB_ZOOM=10;
+var MAX_TURB=200;
+var turbEnabled=true;
+var turbRenderer=L.canvas({padding:0.5});
+function zoneColor(z){return z==='A'?'#ffe600':z==='B'?'#ff8c00':'#e63030';}
+// Pre-sort by pd_100 desc: wenn gecappt, werden die windbesten Standorte bevorzugt
+var turbFeatures=TURBINES_GEOJSON.features.slice().sort(function(a,b){
+  return (b.properties.pd_100||0)-(a.properties.pd_100||0);
 });
+var turbLayer=L.geoJSON(null,{
+  renderer:turbRenderer,
+  pointToLayer:function(f,ll){
+    return L.circleMarker(ll,{radius:5,color:'#333',weight:1,
+      fillColor:zoneColor(f.properties.zone),fillOpacity:0.95});
+  },
+  onEachFeature:function(f,l){
+    var p=f.properties;
+    var flh=zoneFLH(p.zone);
+    var cf=cfPct(flh);
+    var autCF=cfPct(AUT_AVG_FLH);
+    var delta=(flh-AUT_AVG_FLH)/8760*100;
+    var deltaStr=(delta>=0?'+':'')+delta.toFixed(1)+' PP';
+    l.bindPopup(
+      '<div class="popup">'+
+      '<div class="title zone-'+p.zone.toLowerCase()+'">Turbine #'+p.id+' &mdash; Zone '+p.zone+'</div>'+
+      mkR('Bundesland',p.bl||'&mdash;')+
+      mkR('Leistung',p.power_kw+' kW')+
+      (p.pd_100!=null?mkR('Leistungsdichte (100m)',p.pd_100+' W/m²'):'')+
+      (p.elev!=null?mkR('Seehöhe',p.elev+' m'):'')+
+      '<hr>'+
+      mkR('Volllaststunden',flh+' h/a (Zone '+p.zone+')')+
+      mkR('Kapazitätsfaktor','<b>'+cf+'%</b>')+
+      mkR('Ö-Durchschnitt',autCF+'%  <span style="color:'+(delta>=0?'#2a8a2a':'#cc3333')+'">'+deltaStr+'</span>')+
+      '</div>',{maxWidth:280}
+    );
+  }
+});
+layers['turb']=turbLayer;
+function refreshTurbines(){
+  if(!turbEnabled||map.getZoom()<MIN_TURB_ZOOM){
+    if(map.hasLayer(turbLayer)) map.removeLayer(turbLayer);
+    return;
+  }
+  var bounds=map.getBounds();
+  var vis=[];
+  for(var i=0;i<turbFeatures.length&&vis.length<MAX_TURB;i++){
+    var co=turbFeatures[i].geometry.coordinates;
+    if(bounds.contains(L.latLng(co[1],co[0]))) vis.push(turbFeatures[i]);
+  }
+  turbLayer.clearLayers();
+  if(vis.length) turbLayer.addData(vis);
+  if(!map.hasLayer(turbLayer)) turbLayer.addTo(map);
+}
+map.on('zoomend moveend',refreshTurbines);
+refreshTurbines();
 
 // Klick
 function mkR(l,v){return'<div class="row"><span class="label">'+l+'</span><span class="value">'+v+'</span></div>';}
